@@ -37,8 +37,8 @@ provedor. Mantenha senhas e hashes nas variáveis de ambiente do servidor.
 - `schema.sql` — tabelas MySQL.
 - `scripts/generate-admin-password.mjs` — geração local da credencial inicial.
 
-O MySQL armazena contas, sessões, materiais e movimentações de estoque.
-Reservas, equipamentos, manutenções e auditoria do protótipo ficam no
+O MySQL armazena contas, sessões, materiais, movimentações de estoque e reservas.
+Equipamentos, manutenções e auditoria do protótipo ficam no
 navegador. Esses módulos operam com dados de demonstração.
 
 Execute `npm run check` para validar a sintaxe do servidor.

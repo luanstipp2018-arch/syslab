@@ -50,3 +50,22 @@ CREATE TABLE IF NOT EXISTS first_access (
   expires BIGINT NOT NULL,
   FOREIGN KEY (email) REFERENCES users(email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS reservation_lock (
+  id TINYINT PRIMARY KEY
+) ENGINE=InnoDB;
+INSERT IGNORE INTO reservation_lock VALUES (1);
+CREATE TABLE IF NOT EXISTS reservations (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  owner VARCHAR(254) NOT NULL,
+  requester_role ENUM('aluno','professor') NOT NULL,
+  lab VARCHAR(8) NOT NULL,
+  day CHAR(10) NOT NULL,
+  slot VARCHAR(4) NOT NULL,
+  status ENUM('pendente','aprovada','recusada','cancelada') NOT NULL DEFAULT 'pendente',
+  details JSON NOT NULL,
+  history JSON NOT NULL,
+  created CHAR(24) NOT NULL,
+  INDEX (owner, status, day),
+  INDEX (lab, day, slot, status),
+  FOREIGN KEY (owner) REFERENCES users(email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

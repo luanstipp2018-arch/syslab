@@ -1,3 +1,4 @@
+import {reservationList,changeReservation} from './reservations.mjs';
 import { createServer } from 'node:http';
 import { randomBytes, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -45,6 +46,7 @@ function passwordHash(password) {
 
 const roles = { aluno: 'Aluno', professor: 'Professor', resp: 'Responsável pelo laboratório', ti: 'Administrador de TI' };
 const portal = readFileSync(new URL('./portal.html', import.meta.url), 'utf8');
+const portalScript = readFileSync(new URL('./assets/portal.js', import.meta.url));
 const wordmark = readFileSync(new URL('./assets/syslab.png', import.meta.url));
 const stylesheets = new Map(['portal', 'login', 'status', 'usuarios'].map(name => [
   `/assets/${name}.css`,
@@ -219,8 +221,10 @@ function json(res,status,payload) {
   res.end(JSON.stringify(payload));
 }
 
+const canManageStock = user => user?.role === 'resp' || user?.role === 'ti';
+
 async function changeStock(db,res,user,path,data) {
-  if (user?.role !== 'resp') return json(res,403,{error:'Acesso restrito ao responsável.'});
+  if (!canManageStock(user)) return json(res,403,{error:'Acesso restrito ao responsável e à administração de TI.'});
   const quantityText = data.get('qtd') || '';
   const qtd = Number(quantityText);
   if (!/^\d+$/.test(quantityText) || !Number.isSafeInteger(qtd) || qtd > 1_000_000_000) {
@@ -300,6 +304,10 @@ createServer(async (req,res) => {
       res.writeHead(200, {'Content-Type':'image/png'});
       return res.end(req.method === 'HEAD' ? undefined : wordmark);
     }
+    if (url.pathname === '/assets/portal.js' && (req.method === 'GET' || req.method === 'HEAD')) {
+      res.writeHead(200, {'Content-Type':'text/javascript; charset=utf-8'});
+      return res.end(req.method === 'HEAD' ? undefined : portalScript);
+    }
     const stylesheet = stylesheets.get(url.pathname);
     if (stylesheet && (req.method === 'GET' || req.method === 'HEAD')) {
       res.writeHead(200, {'Content-Type':'text/css; charset=utf-8'});
@@ -314,6 +322,14 @@ createServer(async (req,res) => {
     if (req.method === 'POST') {
       if (req.headers.origin !== origin) return page(res,'Solicitação inválida','',403);
       const data = await readForm(req);
+      if (['/reservas/solicitar','/reservas/decidir'].includes(url.pathname)) {
+        try {
+          return json(res,200,await changeReservation(db,user,url.pathname,data));
+        } catch(error) {
+          if(error.status)return json(res,error.status,{error:error.message});
+          throw error;
+        }
+      }
       if (['/estoque/material','/estoque/movimentacao'].includes(url.pathname)) {
         return await changeStock(db,res,user,url.pathname,data);
       }
@@ -412,19 +428,24 @@ createServer(async (req,res) => {
       return valid ? firstAccessPage(res,code) : page(res,'Link inválido ou expirado',
         '<p>Peça um novo link ao administrador.</p><a href="/">Voltar ao login</a>',400);
     }
+    if (req.method === 'GET' && url.pathname === '/reservas') {
+      if(!user)return json(res,401,{error:'Entre novamente.'});
+      return json(res,200,await reservationList(db,user));
+    }
     if (req.method === 'GET' && url.pathname === '/estoque') {
       if (!user) return json(res,401,{error:'Entre novamente.'});
-      return json(res,200,await stockSnapshot(db,user.role==='resp'));
+      return json(res,200,await stockSnapshot(db,canManageStock(user)));
     }
     if (req.method === 'GET' && url.pathname === '/usuarios') {
       return user?.role === 'ti' ? await usersPage(db,res) : page(res,'Acesso restrito','<a href="/">Voltar</a>',403);
     }
     if (req.method === 'GET' && url.pathname === '/') {
       if (!user) return loginPage(res);
-      const stock = await stockSnapshot(db,user.role==='resp');
-      const identity = JSON.stringify({role:user.role,name:user.name,email:user.email,stock}).replaceAll('<','\\u003c');
+      const stock = await stockSnapshot(db,canManageStock(user));
+      const reservations = await reservationList(db,user);
+      const identity = JSON.stringify({role:user.role,name:user.name,email:user.email,stock,reservations}).replaceAll('<','\\u003c');
       res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
-      return res.end(portal.replace('<script>',() => '<script>\nconst signedIn = '+identity+';\n'));
+      return res.end(portal.replace('{{PORTAL_SESSION}}', () => identity));
     }
     return page(res,'Página não encontrada','<a href="/">Voltar</a>',404);
   } catch (error) {
