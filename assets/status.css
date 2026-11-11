@@ -1,0 +1,15 @@
+*{box-sizing:border-box}
+h1{font-family:Sora,system-ui,sans-serif}
+body{margin:0;background:#f4f7fb;color:#0a2a52;font:16px Figtree,system-ui,sans-serif}
+header{padding:18px 24px;background:#0a2a52;color:#fff}
+main{width:min(560px,calc(100% - 32px));margin:clamp(24px,8vh,80px) auto;padding:clamp(16px,4vw,32px);background:#fff;border:1px solid #dce5f0;border-radius:14px}
+h1{margin:0 0 20px;font-size:clamp(1.5rem,5vw,2rem);letter-spacing:-.045em}
+a{display:inline-block;padding:10px 16px;border-radius:8px;background:#0a2a52;color:#fff;text-decoration:none;font-weight:650}
+a:hover{background:#174f83}
+main label{display:grid;gap:6px}
+main input,main button{font:inherit;padding:10px;border-radius:8px}
+main input{border:1px solid #aebdd0;width:100%}
+main button{border:0;background:#0a2a52;color:#fff;cursor:pointer}
+:focus-visible{outline:3px solid #2c7ac4;outline-offset:3px}
+
+.brand-logo{display:block;width:92px;height:auto;border-radius:5px}

@@ -1,0 +1,8 @@
+node_modules/
+.env
+.env.*
+!.env.example
+admin-password-hash.txt
+*.sqlite*
+*.log
+*.zip
