@@ -1,4 +1,4 @@
-import {reservationList,changeReservation} from './reservations.mjs';
+import {reservationList,changeReservation,reservationAttachment} from './reservations.mjs';
 import { createServer } from 'node:http';
 import { randomBytes, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -129,13 +129,15 @@ async function withinLimit(db,key,max,now) {
     throw error;
   }
 }
-async function readForm(req) {
-  let body = '';
-  for await (const chunk of req) {
-    body += chunk.toString();
-    if (body.length > 8192) throw new Error('Formulário muito grande');
+async function readForm(req, limit = 8192) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req.iterator({destroyOnReturn:false})) {
+    size += chunk.length;
+    if (size > limit) return null;
+    chunks.push(chunk);
   }
-  return new URLSearchParams(body);
+  return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
 }
 function emailField() {
   return '<label>E-mail <input type="email" name="email" maxlength="254" required></label>';
@@ -321,7 +323,10 @@ createServer(async (req,res) => {
       WHERE s.hash=? AND s.expires>? AND u.active=1`,sessionHash,now);
     if (req.method === 'POST') {
       if (req.headers.origin !== origin) return page(res,'Solicitação inválida','',403);
-      const data = await readForm(req);
+      const upload = url.pathname === '/reservas/solicitar';
+      if (upload && !user) return json(res,401,{error:'Entre novamente.'});
+      const data = await readForm(req, upload ? 4_250_000 : 8192);
+      if (!data) return json(res,413,{error:'Formulário muito grande. O roteiro pode ter até 1 MB.'});
       if (['/reservas/solicitar','/reservas/decidir'].includes(url.pathname)) {
         try {
           return json(res,200,await changeReservation(db,user,url.pathname,data));
@@ -427,6 +432,21 @@ createServer(async (req,res) => {
         JOIN users u ON u.email=f.email WHERE f.token_hash=? AND f.expires>? AND u.active=1`,digest(code),now);
       return valid ? firstAccessPage(res,code) : page(res,'Link inválido ou expirado',
         '<p>Peça um novo link ao administrador.</p><a href="/">Voltar ao login</a>',400);
+    }
+    const attachmentRoute = /^\/reservas\/R-(\d{1,10})\/roteiro$/.exec(url.pathname);
+    if (req.method === 'GET' && attachmentRoute) {
+      if (!user) return json(res,401,{error:'Entre novamente.'});
+      const file = await reservationAttachment(db,user,Number(attachmentRoute[1]));
+      if (!file) return json(res,404,{error:'Roteiro indisponível.'});
+      const filename = encodeURIComponent(file.filename).replace(/['()*]/g,
+        ch => '%' + ch.charCodeAt(0).toString(16));
+      res.writeHead(200, {
+        'Content-Type':'application/octet-stream',
+        'Content-Disposition':"attachment; filename*=UTF-8''" + filename,
+        'Content-Length':file.content.length,
+        'X-Content-Type-Options':'nosniff',
+      });
+      return res.end(file.content);
     }
     if (req.method === 'GET' && url.pathname === '/reservas') {
       if(!user)return json(res,401,{error:'Entre novamente.'});

@@ -15,8 +15,8 @@ async function query(db,sql,...args) {
 }
 
 export async function reservationList(db,user) {
-  const result = await query(db,`SELECT r.*,u.name AS requester FROM reservations r
-    JOIN users u ON u.email=r.owner ORDER BY r.id`);
+  const result = await query(db,`SELECT r.*,u.name AS requester, a.reservation_id IS NOT NULL AS has_roteiro FROM reservations r
+    JOIN users u ON u.email=r.owner LEFT JOIN reservation_attachments a ON a.reservation_id=r.id ORDER BY r.id`);
   return result.filter(r=>canReview(user)||r.owner===user.email||active.includes(r.status)).map(r=>{
     const own = r.owner===user.email;
     const visible = own||canReview(user);
@@ -26,7 +26,7 @@ export async function reservationList(db,user) {
       nome:visible?r.requester:'Horário solicitado', lab:r.lab, data:r.day, slot:r.slot,
       status:r.status, criada:r.created, hist:visible?readJSON(r.history):[],
       motivo:visible?(readJSON(r.history).at(-1)?.texto || ''):'',
-      email:false, own, privateDetails:visible, requesterRole:r.requester_role,
+      email:false, own, privateDetails:visible, hasRoteiro:visible && Boolean(r.has_roteiro), requesterRole:r.requester_role,
     };
   });
 }
@@ -67,6 +67,23 @@ async function createReservation(db,user,data) {
   const initial=event(user,'Solicitação enviada');
   const result=await query(db,`INSERT INTO reservations(owner,requester_role,lab,day,slot,details,history,created)
     VALUES (?,?,?,?,?,?,?,?)`,user.email,role,lab,day,slot,JSON.stringify(details),JSON.stringify([initial]),initial.em);
+  const encoded = data.get('roteiroConteudo');
+  if (encoded || details.roteiro) {
+    const filename = details.roteiro;
+    const extension = filename.match(/\.(pdf|docx?)$/i)?.[1].toLowerCase();
+    if (!encoded || !extension || filename.length > 180 || encoded.length > 1398104 ||
+        /[\x00-\x1f\x7f/\\]/.test(filename) || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+      reject('Anexe um PDF ou Word de até 1 MB.', 400);
+    }
+    const content = Buffer.from(encoded, 'base64');
+    const signatures = {pdf:'255044462d', doc:'d0cf11e0a1b11ae1', docx:'504b0304'};
+    if (content.length > 1048576 || content.toString('base64') !== encoded ||
+        !content.subarray(0, 8).toString('hex').startsWith(signatures[extension])) {
+      reject('O conteúdo do roteiro não corresponde ao formato informado.', 400);
+    }
+    await query(db, 'INSERT INTO reservation_attachments(reservation_id,filename,content) VALUES (?,?,?)',
+      result.insertId, filename, content);
+  }
   return {id:'R-'+result.insertId};
 }
 
@@ -110,6 +127,14 @@ async function decide(db,user,data) {
   }
   await setStatus(db,user,row,'aprovada','');
   return {id:code};
+}
+
+export async function reservationAttachment(db, user, id) {
+  if (!user) return null;
+  const [file] = await query(db, `SELECT a.filename, a.content
+    FROM reservation_attachments a JOIN reservations r ON r.id=a.reservation_id
+    WHERE r.id=? AND (r.owner=? OR ?=1)`, id, user.email, Number(canReview(user)));
+  return file ?? null;
 }
 
 export async function changeReservation(db,user,path,data) {

@@ -165,7 +165,7 @@ let S=load();
 S.role=signedIn.role;
 Object.assign(S,signedIn.stock);
 S.res=signedIn.reservations || [];
-const blankForm=()=>({lab:'ELE',data:'',slot:'',fin:'aula',disciplina:'',alunos:'',tccAlunos:'',hw:[],materiais:'',roteiro:'',obs:'',email:true,errors:{}});
+const blankForm=()=>({lab:'ELE',data:'',slot:'',fin:'aula',disciplina:'',alunos:'',tccAlunos:'',hw:[],materiais:'',roteiro:'',roteiroFile:null,obs:'',email:true,errors:{}});
 const UI={view:NAV[S.role][0].v,lab:'ELE',form:blankForm(),minhas:'todas',filaSel:new Set(),filaLab:'todos',eqBusca:'',eqLab:'todos',eqSit:'todos',osFiltro:'emaberto',alBusca:'',ckTab:'hoje',tiPerfil:'todos',tiBusca:'',bell:false,fc:null};
 const me=()=>{const id=ROLES[S.role].user;return {id,...PEOPLE[id],nome:signedIn.name,papel:ROLES[signedIn.role].label,ini:signedIn.name.slice(0,2).toUpperCase()}};
 const canRequest=()=>S.role==='professor'||S.role==='aluno';
@@ -432,7 +432,7 @@ function formHTML(){
       <div id="dyn">${dynHTML()}</div>
       <div class="field"><label for="f-mat">Materiais de consumo necessários <span class="opt">opcional</span></label><textarea id="f-mat" class="input" data-f="materiais" placeholder="Ex.: resistores, LEDs, jumpers e 10 protoboards">${esc(f.materiais)}</textarea><span class="help">Ajuda a responsável a preparar a aula com antecedência.</span></div>
       <div class="field"><span class="lbl">Roteiro da atividade <span class="opt">opcional</span></span>
-        <label class="drop"><input type="file" data-f="roteiro" accept=".pdf,.doc,.docx" hidden><span class="fi">${ic(f.roteiro?'file':'upload')}</span><span>${f.roteiro?`<b>${esc(f.roteiro)}</b><small>Clique para trocar o arquivo</small>`:`<b>Anexar roteiro</b><small>PDF ou Word. Nesta demonstração o arquivo não sai do seu computador.</small>`}</span></label></div>
+        <label class="drop"><input type="file" data-f="roteiro" accept=".pdf,.doc,.docx" hidden><span class="fi">${ic(f.roteiro?'file':'upload')}</span><span>${f.roteiro?`<b>${esc(f.roteiro)}</b><small>Clique para trocar o arquivo</small>`:`<b>Anexar roteiro</b><small>PDF ou Word (.doc ou .docx), até 1 MB.</small>`}</span></label></div>
       <div class="field"><label for="f-obs">Observações ${e.obs?'':'<span class="opt">obrigatório aos sábados</span>'}</label><textarea id="f-obs" class="input ${e.obs?'bad':''}" data-f="obs" placeholder="Ex.: reposição da aula do dia 10">${esc(f.obs)}</textarea>${err('obs')}</div>
       <div class="factions"><button class="btn ghost" data-act="form-clear">Limpar</button><button class="btn primary" data-act="form-send">${ic('check')}Enviar solicitação</button></div>
     </div>
@@ -485,10 +485,18 @@ function prefill(lab,date,slot,extra={}){
   if(card){card.scrollIntoView({behavior:'smooth',block:'start'});card.classList.remove('flash');void card.offsetWidth;card.classList.add('flash')}
 }
 let reservationPending=false;
-async function refreshReservations(){
-  const response=await fetch('/reservas');
-  if(!response.ok)throw new Error('Não foi possível atualizar as reservas.');
-  S.res=await response.json();
+async function refreshReservations() {
+  const request = () => fetch('/reservas', { cache: 'no-store' });
+  let response = await request().catch(() => null);
+  if (!response || [502, 503, 504].includes(response.status)) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    response = await request();
+  }
+  if (response.status === 401) throw new Error('Sua sessão expirou. Recarregue a página e entre novamente.');
+  if (!response.ok) throw new Error('Tente abrir a tela novamente em instantes.');
+  const reservations = await response.json();
+  if (!Array.isArray(reservations)) throw new Error('A lista recebida está inválida. Recarregue a página.');
+  S.res = reservations;
 }
 async function reservationAction(path,data){
   if(reservationPending)return;
@@ -552,7 +560,22 @@ async function enviar(){
     toast('Revise a solicitação','Alguns campos precisam de ajuste.','bad');return;
   }
   const hw=f.hw.filter(id=>{const q=eqOf(id);return q&&disponivel(q)&&!hwOcupado(id,f.data,f.slot)});
-  const result=await reservationAction('/reservas/solicitar',{...f,hw:JSON.stringify(hw),view:S.role});
+  const {roteiroFile, errors, ...fields} = f;
+  let roteiroConteudo = '';
+  if (roteiroFile) {
+    try {
+      const bytes = new Uint8Array(await roteiroFile.arrayBuffer());
+      const chunks = [];
+      for (let i = 0; i < bytes.length; i += 8192) {
+        chunks.push(String.fromCharCode(...bytes.subarray(i, i + 8192)));
+      }
+      roteiroConteudo = btoa(chunks.join(''));
+    } catch {
+      toast('Não foi possível ler o roteiro', 'Selecione o arquivo novamente.', 'bad');
+      return;
+    }
+  }
+  const result=await reservationAction('/reservas/solicitar',{...fields,roteiroConteudo,hw:JSON.stringify(hw),view:S.role});
   if(!result)return;
   UI.form=blankForm();
   UI.form.lab=f.lab;
@@ -650,6 +673,11 @@ function ritem(r){
     </div>
   </article>`;
 }
+function roteiroLink(reserva) {
+  return reserva.hasRoteiro
+    ? `<a class="btn sm" href="/reservas/${encodeURIComponent(reserva.id)}/roteiro">Baixar roteiro para imprimir</a>`
+    : '';
+}
 function detalhes(id){
   const r=S.res.find(x=>x.id===id);if(!r?.privateDetails)return;
   const s=slotOf(r.slot), prof=canRequest(), fut=parseD(r.data)>=TODAY;
@@ -664,7 +692,7 @@ function detalhes(id){
     ${r.tccAlunos?`<dt>Alunos do TCC</dt><dd>${esc(r.tccAlunos)}</dd>`:''}
     <dt>Equipamentos</dt><dd>${r.hw.length?r.hw.map(i=>`${esc(eqName(i))} <span class="rid">${i}</span>`).join('<br>'):'Nenhum'}</dd>
     <dt>Materiais</dt><dd>${r.materiais?esc(r.materiais):'Não informado'}</dd>
-    <dt>Roteiro</dt><dd>${r.roteiro?esc(r.roteiro):'Não anexado'}</dd>
+    <dt>Roteiro</dt><dd>${r.roteiro?esc(r.roteiro)+(r.hasRoteiro?'':' (arquivo indisponível)'):'Não anexado'}</dd>
     ${r.obs?`<dt>Observações</dt><dd>${esc(r.obs)}</dd>`:''}
     ${sla?`<dt>Prazo de resposta</dt><dd>${sla.t}</dd>`:''}
   </dl>
@@ -674,6 +702,7 @@ function detalhes(id){
   if(!prof&&r.status==='pendente')foot=`<button class="btn danger" data-act="recusar" data-id="${r.id}">Recusar</button><button class="btn primary" data-act="aprovar" data-id="${r.id}">${ic('check')}Aprovar</button>`;
   else if(!prof&&r.status==='aprovada'&&fut)foot=`<button class="btn danger" data-act="cancel" data-id="${r.id}">Cancelar reserva</button>`;
   else if(prof&&r.own&&ACTIVE.includes(r.status)&&fut)foot=`<button class="btn danger" data-act="cancel" data-id="${r.id}">Cancelar solicitação</button>`;
+  if (!prof || r.own) foot = roteiroLink(r) + foot;
   openModal({title:`Reserva ${r.id}`,body,foot,size:'m-lg'});
 }
 function cancelarModal(id){
@@ -786,7 +815,6 @@ function pgFila(){
   const rows=pend.map(r=>{
     const s=slotOf(r.slot), sla=slaInfo(r);
     const others=pendentesEm(r.lab,r.data,r.slot).filter(x=>x.id!==r.id);
-  if(ap)others.push(ap);
     const ap=aprovadaEm(r.lab,r.data,r.slot);
     let conf='';
     if(ap&&!blockedSlot(ap,r.requesterRole))conf=`<span class="conf">Prioridade docente sobre ${ap.id}</span>`;
@@ -877,7 +905,7 @@ function ckCard(r){
   return `<section class="panel" style="${labVars(r.lab)}">
     <div class="ckhead"><div class="dateblk sm"><span class="d">${d.getDate()}</span><span class="m">${MES[d.getMonth()]}</span></div>
       <div class="info"><b>${slotOf(r.slot).h}, ${L.curto}</b><span>${esc(r.nome)}, ${esc(r.disciplina)}, ${r.alunos} pessoas</span></div>
-      ${finBadge(r.fin)}<button class="btn sm ghost" data-act="det" data-id="${r.id}">${ic('eye')}Reserva</button></div>
+      ${finBadge(r.fin)}${roteiroLink(r)}<button class="btn sm ghost" data-act="det" data-id="${r.id}">${ic('eye')}Reserva</button></div>
     <div class="ckcols">${col('pre',pre,'Antes da aula')}${col('pos',pos,'Depois da aula')}</div>
   </section>`;
 }
@@ -900,7 +928,7 @@ function pgEquip(){
   const cnt={todos:S.equip.length,ok:0,proximo:0,avaria:0,manutencao:0};
   S.equip.forEach(e=>cnt[eff(e)]++);
   const opts=[['todos','Todos',null],['ok','Operacional',EST.ok[2]],['proximo','Preventiva próxima',EST.proximo[2]],['avaria','Com avaria',EST.avaria[2]],['manutencao','Em manutenção',EST.manutencao[2]]];
-  return phead('Equipamentos','Inventário dos equipamentos permanentes dos quatro laboratórios, com patrimônio, conservação e situação.',`<button class="btn primary" data-act="eq-new">${ic('plus')}Cadastrar equipamento</button>`)+
+  return phead('Equipamentos','Inventário dos equipamentos permanentes dos quatro laboratórios, com patrimônio, conservação e situação.',`<button class="btn" data-act="eq-example">Ferramenta de teste</button><button class="btn primary" data-act="eq-new">${ic('plus')}Cadastrar equipamento</button>`)+
   `<div class="toolbar"><div class="chips">${opts.map(([k,t,c])=>`<button class="chip ${UI.eqSit===k?'on':''}" data-act="eq-sit" data-k="${k}">${c?`<span class="d" style="background:${c}"></span>`:''}${t}<span class="k">${cnt[k]}</span></button>`).join('')}</div></div>
   <div class="toolbar"><div class="search">${ic('search')}<input class="input" data-f="eqBusca" value="${esc(UI.eqBusca)}" placeholder="Buscar por nome, modelo, código ou patrimônio" aria-label="Buscar equipamento"></div>
     <select class="input" data-f="eqLab" aria-label="Laboratório"><option value="todos">Todos os laboratórios</option>${Object.values(LABS).map(l=>`<option value="${l.id}" ${UI.eqLab===l.id?'selected':''}>${l.curto}</option>`).join('')}</select></div>
@@ -1043,7 +1071,7 @@ function pgAlmox(){
   const saidas=S.movs.filter(m=>m.tipo==='saida'&&new Date(m.em).getTime()>=m30).length;
   const movs=S.movs.slice().sort((a,b)=>b.em.localeCompare(a.em)).slice(0,10);
   return phead('Almoxarifado','Materiais de consumo e componentes: quantidade, entradas, saídas e estoque mínimo. A reposição costuma ser semestral.',
-    `<button class="btn" data-act="compras">${ic('cart')}Lista de reposição</button><button class="btn primary" data-act="item-new">${ic('plus')}Cadastrar material</button>`)+`
+    `<button class="btn" data-act="item-example">Material de teste</button><button class="btn" data-act="compras">${ic('cart')}Lista de reposição</button><button class="btn primary" data-act="item-new">${ic('plus')}Cadastrar material</button>`)+`
   <section class="panel kpis">
     <div class="kpi"><b>${S.itens.length}</b><span>materiais cadastrados</span></div>
     <div class="kpi ${baixo?'pr':''}"><b>${baixo}</b><span>abaixo do mínimo</span></div>
@@ -1199,7 +1227,9 @@ function go(v){if(['agenda','minhas','fila','painel','check'].includes(v)){
   refreshReservations().then(()=>{
     if(UI.view===v&&!modals.length&&!$('#main').contains(document.activeElement))renderMain();
   })
-    .catch(()=>toast('Falha ao atualizar reservas','Recarregue a página para tentar novamente.','bad'));
+    .catch(error=>{
+      if(UI.view===v)toast('Falha ao atualizar reservas',error instanceof TypeError ? 'Confira a conexão e abra a tela novamente.' : error.message,'bad');
+    });
 }if(v==='almox')refreshStock().then(()=>{if(UI.view==='almox')renderMain()}).catch(()=>toast('Falha ao atualizar estoque','Recarregue a página para tentar novamente.','bad'));UI.view=v;closeAll();renderSide();renderMain();window.scrollTo(0,0)}
 document.addEventListener('click',e=>{
   const el=e.target.closest('[data-act]');
@@ -1229,9 +1259,22 @@ document.addEventListener('click',e=>{
     case 'form-send':enviar();break;
     case 'minhas-f':UI.minhas=el.dataset.k;renderMain();break;
     case 'det':detalhes(id);break;
+    case 'eq-example':
+      eqNew();
+      $('#m-nome').value = 'Multímetro digital (teste)';
+      $('#m-modelo').value = 'Bancada didática';
+      $('#m-pat').value = 'TESTE-MULT-01';
+      break;
+    case 'item-example':
+      itemNew();
+      $('#m-nome').value = 'Resistor 220 Ω (teste)';
+      $('#m-local').value = 'Caixa de demonstração';
+      $('#m-qtd').value = '30';
+      $('#m-min').value = '5';
+      break;
     case 'cancel':closeAll();cancelarModal(id);break;
     case 'cancel-ok':cancelarOk(id);break;
-    case 'rebook':{const r=S.res.find(x=>x.id===id);if(r){go('agenda');prefill(r.lab,'','',{fin:r.fin,disciplina:r.disciplina,alunos:String(r.alunos),tccAlunos:r.tccAlunos,materiais:r.materiais,roteiro:r.roteiro});UI.form.hw=[...r.hw];renderForm();toast('Escolha uma nova data','Os dados do pedido anterior já estão no formulário.')}break}
+    case 'rebook':{const r=S.res.find(x=>x.id===id);if(r){go('agenda');prefill(r.lab,'','',{fin:r.fin,disciplina:r.disciplina,alunos:String(r.alunos),tccAlunos:r.tccAlunos,materiais:r.materiais});UI.form.hw=[...r.hw];renderForm();toast('Escolha uma nova data','Os dados do pedido anterior já estão no formulário.')}break}
     case 'problema':problemaModal(id);break;
     case 'problema-res':problemaModal(id);break;
     case 'problema-ok':problemaOk();break;
@@ -1312,7 +1355,19 @@ document.addEventListener('change',e=>{
     case 'data':UI.form.data=t.value;clearErr();renderDyn();break;
     case 'slot':UI.form.slot=t.value;clearErr();renderDyn();break;
     case 'email':UI.form.email=t.checked;break;
-    case 'roteiro':UI.form.roteiro=(t.files&&t.files[0])?t.files[0].name:UI.form.roteiro;renderForm();break;
+    case 'roteiro': {
+      const file = t.files?.[0];
+      if (!file) break;
+      if (file.size > 1024 * 1024 || !/\.(pdf|docx?)$/i.test(file.name)) {
+        toast('Arquivo inválido', 'Escolha um PDF ou Word de até 1 MB.', 'bad');
+        t.value = '';
+        break;
+      }
+      UI.form.roteiroFile = file;
+      UI.form.roteiro = file.name;
+      renderForm();
+      break;
+    }
     case 'eqLab':UI.eqLab=t.value;renderEquipTable();break;
     case 'tiPerfil':UI.tiPerfil=t.value;renderLogTable();break;
     case 'filaLab':UI.filaLab=t.value;renderMain();break;

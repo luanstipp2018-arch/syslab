@@ -69,3 +69,10 @@ CREATE TABLE IF NOT EXISTS reservations (
   INDEX (lab, day, slot, status),
   FOREIGN KEY (owner) REFERENCES users(email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS reservation_attachments (
+  reservation_id INT UNSIGNED PRIMARY KEY,
+  filename VARCHAR(180) NOT NULL,
+  content MEDIUMBLOB NOT NULL,
+  FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
